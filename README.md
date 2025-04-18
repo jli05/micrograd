@@ -47,6 +47,8 @@ x.forward(var1=value1, var2=value2, ...)
 x.backward()
 ```
 
+Each time the `forward()` is called (e.g. for minibatch evaluation), the lazily defined variables have to be fed values in the function signature. Otherwise, it will take all `nan` as value. The final result will likely be `nan` to signal missing values for some variables.
+
 ## Efficient operator dependency topology computation
 The operator dependency topology computation is only calculated once then cached, supposing the topology is static once a variable is defined.
 
