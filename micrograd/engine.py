@@ -1,7 +1,8 @@
 
 from numpy import (array, ndarray, nan, ones, zeros, full,
-                   shape as get_shape, where, sum as npsum, mean,
-                   log1p, arctanh, broadcast_arrays, expand_dims, prod)
+                   shape as get_shape, where, sum as npsum,
+                   log1p, arctanh, broadcast_arrays, expand_dims,
+                   prod, tensordot, isnan, all as npall)
 from numbers import Number
 from warnings import warn
 
@@ -12,14 +13,14 @@ class Value:
                  shape=None, name=None):
         if data is not None:
             assert isinstance(data, (ndarray, Number))
-            assert name is None
-            assert shape is None
+            assert name is None, "data provided, no need for name"
+            assert shape is None, "data provided, no need for shape"
             self.data = data
             self.name = None
             self.shape = get_shape(data)
         else:
-            assert name
-            assert shape is not None
+            assert name, "data not provided, name must be given"
+            assert shape is not None, "data not provided, shape must be given"
             self.name = name
             self.shape = shape
             self.data = full(self.shape, nan)
@@ -32,15 +33,18 @@ class Value:
         def _forward(**kwds):
             if self.name:
                 if self.name in kwds:
-                    assert get_shape(kwds[self.name]) == self.shape
-                    self.data = kwds[self.name]
+                    _value = kwds[self.name]
+                    assert isinstance(_value, (ndarray, Number))
+                    assert get_shape(_value) == self.shape
+                    self.data = _value
                 else:
                     warn(f'{self.name} not in input data')
                     self.data = full(self.shape, nan)
         self._forward = _forward
 
     def __add__(self, other):
-        other = other if isinstance(other, Value) else Value(other)
+        other = (other if isinstance(other, Value)
+                 else Value(other, _op='c'))
         out = Value(self.data + other.data, (self, other), '+')
 
         def _forward(**kwds):
@@ -61,7 +65,8 @@ class Value:
         return out
 
     def __mul__(self, other):
-        other = other if isinstance(other, Value) else Value(other)
+        other = (other if isinstance(other, Value)
+                 else Value(other, _op='c'))
         out = Value(self.data * other.data, (self, other), '*')
 
         def _forward(**kwds):
@@ -82,7 +87,9 @@ class Value:
         return out
 
     def __pow__(self, other):
-        assert isinstance(other, (int, float)), "only supporting int/float powers for now"
+        # TOODO: array(3) ** -1 won't do. array(3).astype(float) if excepted
+        assert isinstance(other, (int, float)), ("only supporting"
+                                                 " int/float powers for now")
         out = Value(self.data ** other, (self,), f'**{other}')
 
         def _forward(**kwds):
@@ -90,7 +97,7 @@ class Value:
         out._forward = _forward
 
         def _backward():
-            self.grad += (other * self.data**(other-1)) * out.grad
+            self.grad += (other * self.data ** (other - 1)) * out.grad
         out._backward = _backward
 
         return out
@@ -108,6 +115,10 @@ class Value:
         out._backward = _backward
 
         return out
+
+    @property
+    def ndim(self):
+        return len(self.shape)
 
     def relu(self):
         out = Value(where(self.data > 0, self.data, 0), (self,), 'ReLU')
@@ -164,7 +175,7 @@ class Value:
                          for j, h in enumerate(self.shape)]
         m_new = ones(new_shape)
 
-        expand_axis = list(range(self.data.ndim)) if axis is None else axis
+        expand_axis = tuple(range(self.data.ndim)) if axis is None else axis
 
         def _forward(**kwds):
             out.data = npsum(self.data, axis=axis)
@@ -188,6 +199,31 @@ class Value:
 
         return self.sum(axis) * (1 / denom)
 
+    def tensordot(self, other, axes):
+        ''' Tensor contraction, only accepting int axes '''
+        assert axes >= 0          # only int axes
+        axes1 = [[-1 - j for j in range(axes)], list(range(axes))]
+        axes2 = [[-1 - j for j in range(self.ndim - axes)],
+                 list(range(self.ndim - axes))]
+        axes3 = [[-1 - j for j in range(other.ndim - axes)],
+                 list(range(other.ndim - axes))]
+
+        other = (other if isinstance(other, Value)
+                 else Value(other, _op='c'))
+        out = Value(tensordot(self.data, other.data, axes=axes1),
+                    (self, other), '@')
+
+        def _forward(**kwds):
+            out.data = tensordot(self.data, other.data, axes=axes1)
+        out._forward = _forward
+
+        def _backward():
+            self.grad += tensordot(out.grad, other.data.T, axes=axes3)
+            other.grad += tensordot(self.data.T, out.grad, axes=axes2)
+        out._backward = _backward
+
+        return out
+
     def build_topology(self):
         # topological order all of the children in the graph
         if not hasattr(self, 'topo'):
@@ -210,6 +246,9 @@ class Value:
             v._forward(**kwds)
 
     def backward(self):
+
+        if npall(isnan(self.data)):
+            warn('run forward() before backward()')
 
         self.build_topology()
         # go one variable at a time and apply the chain rule to get its gradient
@@ -238,6 +277,9 @@ class Value:
 
     def __rtruediv__(self, other): # other / self
         return other * self**-1
+
+    def __matmul__(self, other):
+        return self.tensordot(other, 1)
 
     def __repr__(self):
         return f"Value(data={self.data}, grad={self.grad})"

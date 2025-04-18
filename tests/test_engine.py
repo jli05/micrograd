@@ -1,6 +1,6 @@
 from unittest import TestCase
 from micrograd.engine import Value
-from numpy import array, isclose, allclose, nan, inf
+from numpy import array, isclose, allclose, nan, inf, empty
 
 class AutodiffTest(TestCase):
 
@@ -83,6 +83,8 @@ class AutodiffTest(TestCase):
     def test_mean_op(self):
 
         a = Value(shape=(2, 2, 3), name='a')
+        self.assertTrue(a.mean()._op == '*')
+
         b = (a.mean(axis=(0, 2)) - 6).relu()
         b.forward(a=array([[[1, 2, 3], [4, 5, 6]],
                            [[7, 8, 9], [10, 11, 12]]]))
@@ -112,6 +114,33 @@ class AutodiffTest(TestCase):
                            [[7, 8, 9], [10, 11, 12]]]))
         c.backward()
         self.assertTrue(allclose(a.grad, 0))
+
+    def test_tensordot_op(self):
+
+        a = Value(empty((2, 3, 4)))
+        b = Value(empty((4, 3, 5)))
+        c = a.tensordot(b, 1)
+        c.backward()
+        self.assertTrue(allclose(c.shape, (2, 3, 3, 5)))
+
+        c = a.tensordot(b, 2)
+        c.backward()
+        self.assertTrue(allclose(c.shape, (2, 5)))
+
+        a = Value(empty((2,)))
+        b = Value(empty((3,)))
+        c = a.tensordot(b, 0)
+        c.backward()
+        self.assertTrue(allclose(c.shape, (2, 3)))
+
+        # test inner product
+        a = Value(array([2, 3]))
+        b = Value(array([3, 4]))
+        c = (a @ b) ** 2
+        self.assertTrue(c.data == 18 ** 2)
+        c.backward()
+        self.assertTrue(allclose(a.grad, [108, 144]))
+        self.assertTrue(allclose(b.grad, [72, 108]))
 
     def test_chain_ops(self):
         x = Value(-4.0)
